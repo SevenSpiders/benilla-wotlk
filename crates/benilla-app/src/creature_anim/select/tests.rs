@@ -42,6 +42,23 @@ fn stationary_is_stand() {
 }
 
 #[test]
+fn a_flying_mover_takes_the_fly_tier_when_the_byte_is_empty() {
+    assert_eq!(effective_anim_tier(0, 0), 0);
+    assert_eq!(effective_anim_tier(3, 0), 3);
+    assert_eq!(effective_anim_tier(0, move_flags::FLYING), 3);
+    assert_eq!(
+        effective_anim_tier(2, move_flags::FLYING),
+        2,
+        "the descriptor byte wins"
+    );
+    assert_eq!(
+        effective_anim_tier(0, move_flags::CAN_FLY),
+        0,
+        "CAN_FLY on the ground stays the ground tier"
+    );
+}
+
+#[test]
 fn walk_run_boundary_is_twice_walk_speed() {
     assert_eq!(gait_candidates(&moving_forward(4.9), 2.5, None, None)[0], 4);
     assert_eq!(gait_candidates(&moving_forward(5.0), 2.5, None, None)[0], 4); // exactly 2× is Walk

@@ -1333,11 +1333,14 @@ fn drive_unit(
             cast_start: cast_start.map(|(_, a)| a),
             wielded,
             store,
-            anim_tier: if mount_body.is_some() {
-                host_store.map_or(0, |s| s.0.unit_anim_tier())
-            } else {
-                store.map_or(0, |s| s.0.unit_anim_tier())
-            },
+            anim_tier: select::effective_anim_tier(
+                if mount_body.is_some() {
+                    host_store.map_or(0, |s| s.0.unit_anim_tier())
+                } else {
+                    store.map_or(0, |s| s.0.unit_anim_tier())
+                },
+                mv.flags,
+            ),
             emote_sounds,
             interacting: interacting || drv.interact_hold,
             walk,

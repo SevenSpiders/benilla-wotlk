@@ -393,6 +393,19 @@ fn idle_fallback(state: &MovementState) -> &'static [u16] {
     }
 }
 
+/// The anim tier ResolveAnimForModel (`0x7176f0`) asks for. The descriptor byte is the usual
+/// source (`0x7167e9`); a flying mover whose byte is still 0 still takes the fly tier, so a
+/// playerbot that only set `MOVEFLAG_FLYING` plays FlyStand (229) instead of Stand.
+pub(crate) fn effective_anim_tier(field: u8, flags: u32) -> u8 {
+    if field != 0 {
+        field
+    } else if flags & move_flags::FLYING != 0 {
+        3
+    } else {
+        0
+    }
+}
+
 /// `0x71dcc0`: whether a latched special idle holds a caster's missiles: a spell-cast behavior
 /// (Spell, SpellCast, SpellCastArea, SpellCastDirected, SpellCastOmni, `0x71d380`) or a ranged
 /// attack's (AttackBow, AttackRifle, AttackThrown), read off the row's BehaviorID.

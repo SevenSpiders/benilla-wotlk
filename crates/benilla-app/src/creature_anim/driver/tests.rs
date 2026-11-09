@@ -2609,6 +2609,17 @@ fn a_mount_child_plays_the_riders_fly_tier_idle() {
         Some(0),
         "a ground-tier rider's mount stands"
     );
+
+    app.world_mut().entity_mut(rider).insert(MovementState {
+        flags: crate::creature_anim::move_flags::FLYING,
+        ..MovementState::default()
+    });
+    app.update();
+    assert_eq!(
+        drv_of(&app, mount).active_anim(),
+        Some(FLY_STAND),
+        "FLYING with no descriptor byte still plays FlyStand"
+    );
 }
 
 /// A mount's JumpLandRun 187 resolves to Run(5), a rate-scaled clip, so the landing runs at
