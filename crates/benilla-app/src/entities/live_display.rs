@@ -282,7 +282,12 @@ pub(super) fn heal_rig_starved(
                 benilla_world::rig_palette::RigSkin,
                 super::BoneAttach,
                 super::equipment::HeldAttached,
-                benilla_world::rig_palette::RigStarved,
+                (
+                    benilla_world::rig_palette::RigStarved,
+                    super::wmo_props::WmoPropsResolved,
+                    super::wmo_props::WmoProps,
+                    crate::transport::ShipProps,
+                ),
             )>()
             .insert((super::equipment::Reattached, ShownRebuild));
     }
@@ -348,6 +353,12 @@ pub(super) fn rebuild_visual(commands: &mut Commands, entity: Entity) {
             benilla_world::rig_palette::RigSkin,
             super::BoneAttach,
             super::equipment::HeldAttached,
+            // A WMO GameObject's props are children of the visual: resolve them again.
+            (
+                super::wmo_props::WmoPropsResolved,
+                super::wmo_props::WmoProps,
+                crate::transport::ShipProps,
+            ),
         )>()
         .insert(super::equipment::Reattached);
 }
