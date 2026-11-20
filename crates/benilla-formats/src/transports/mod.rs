@@ -20,6 +20,9 @@ pub struct TransportSample {
     pub pos: [f32; 3],
     /// Radians in `[0, 2π)`, `atan2(dir.y, dir.x) + π` (`Transport.cpp:347`).
     pub heading: f32,
+    /// A full orientation `(x, y, z, w)` that replaces the heading's yaw: a type-11 transport's
+    /// turned keys (`0x70dc10`). `None` draws the heading.
+    pub rotation: Option<[f32; 4]>,
     /// False while parked at a stop or on a keyframe's zero-width instant.
     pub moving: bool,
 }
@@ -668,6 +671,7 @@ impl TransportTimetable {
                 map: 0,
                 pos: [0.0; 3],
                 heading: 0.0,
+                rotation: None,
                 moving: false,
             };
         }
@@ -687,6 +691,7 @@ impl TransportTimetable {
                 map: frame.map_id,
                 pos: frame.pos,
                 heading: frame.initial_orientation,
+                rotation: None,
                 moving: false,
             };
         }
@@ -723,6 +728,7 @@ impl TransportTimetable {
             map: frame.map_id,
             pos,
             heading,
+            rotation: None,
             moving: true,
         }
     }

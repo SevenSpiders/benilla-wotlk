@@ -433,10 +433,11 @@ pub use taxi::{load_taxi_path_nodes, TaxiPathNode, TaxiPathNodes};
 mod transport_period;
 mod transports;
 pub use transports::{TransportSample, TransportTimetable};
-// Type-11 elevator and lift keyframe paths.
+// Type-11 elevator and tram keyframe paths and orientation keys.
 mod elevators;
 pub use elevators::{
-    elevator_period_ms, elevator_sample, load_elevator_paths, ElevatorKeyframe, ElevatorPaths,
+    elevator_period_ms, elevator_rotation, elevator_sample, load_elevator_paths,
+    load_rotation_paths, ElevatorKeyframe, ElevatorPaths, RotationKey, RotationPaths,
 };
 
 // The flight-master catalogs: nodes (`TaxiNodes.dbc`) and direct-hop fares (`TaxiPath.dbc`).
