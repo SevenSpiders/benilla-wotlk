@@ -131,6 +131,10 @@ mod creature_families;
 pub use creature_families::{
     load_creature_families, load_pet_food_names, CreatureFamilies, CreatureFamily, PetFoodNames,
 };
+mod destructible_model_data;
+pub use destructible_model_data::{
+    load_destructible_models, DestructibleModel, DestructibleModels, DESTRUCTIBLE_STATES,
+};
 mod gameobjects;
 pub use gameobjects::{
     go_sound_slot, load_gameobject_catalog, load_gameobject_sounds, GameObjectCatalog,
