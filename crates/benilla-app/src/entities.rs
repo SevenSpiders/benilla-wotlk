@@ -746,6 +746,7 @@ impl Plugin for EntitiesPlugin {
                 (
                     spawn_wmo_gameobject_props,
                     destructible::drive_building_doodads,
+                    destructible::tend_building_swaps,
                 )
                     .chain(),
                 attach_held_items,
