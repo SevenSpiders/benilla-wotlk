@@ -432,7 +432,10 @@ mod taxi;
 pub use taxi::{load_taxi_path_nodes, TaxiPathNode, TaxiPathNodes};
 mod transport_period;
 mod transports;
-pub use transports::{TransportSample, TransportTimetable};
+pub use transports::{
+    load_transport_physics, Rocking, TransportPhysics, TransportPhysicsTable, TransportSample,
+    TransportTimetable,
+};
 // Type-11 elevator and tram keyframe paths and orientation keys.
 mod elevators;
 pub use elevators::{
