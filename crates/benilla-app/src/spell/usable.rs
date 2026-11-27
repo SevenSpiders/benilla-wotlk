@@ -13,7 +13,8 @@
 //! sub-conditions, and the legs of `0x80b5d0` between the cooldown fold and the place legs (the
 //! pet-actions check, the aura-interrupt pair on client flag `0x200000`) and after them (the
 //! battleground-only `AttributesExC & 0x800` and not-in-raid `AttributesExF & 0x800` map tests).
-//! The assist check in leg 10b is a reaction-rank test (friendly or better), not the reference's.
+//! Leg 10b's assist arm is a reaction-rank test (friendly or better), not the reference's: a
+//! single-friend spell whose target fails it reads its target legs on the caster.
 
 use benilla_protocol::messages::ItemUseSpell;
 
@@ -105,7 +106,7 @@ impl UsablePlaceFeed<'_> {
 }
 
 /// The implicit targets leg 10b forks on: 6, single enemy, asks the attack check; 21, single
-/// friend, asks the assist check.
+/// friend, reads the caster when the target is short of friendly.
 const IMPLICIT_TARGET_ENEMY: u32 = 6;
 const IMPLICIT_TARGET_FRIEND: u32 = 21;
 
@@ -616,49 +617,54 @@ pub(crate) fn spell_usable(
     if !caster_aura_spells_met(d, spells, ctx.self_auras) {
         return (false, false);
     }
-    // Legs 10/10b: no current target is unusable while a state or an aura is required; then the
-    // aura-state bit and the aura spells; then the relation fork.
+    // Legs 10/10b: the unit the target legs read; no unit is unusable while a state or an aura is
+    // required; then the aura-state bit and the aura spells; then, under a TargetAuraState alone,
+    // the relation fork. A single-friend spell with no target, or with a target short of friendly,
+    // lands on the caster (autoSelfCast), so its legs read the caster: Power Word: Shield greys
+    // under our own Weakened Soul and stays lit on a hostile target. Not traced in `0x80b5d0`.
     let wants_target_aura = spells.for_difficulty(d.target_aura_spell) != 0;
     let bars_target_aura = spells.for_difficulty(d.exclude_target_aura_spell) != 0;
     let target_legs = d.target_aura_state != 0 || wants_target_aura || bars_target_aura;
-    if ctx.target_store.is_none() && (d.target_aura_state != 0 || wants_target_aura) {
+    let self_cast = d.implicit_target_a1 == IMPLICIT_TARGET_FRIEND
+        && ctx.target_store.is_none_or(|t| {
+            ring_reaction(
+                ctx.factions,
+                ctx.reputations,
+                ctx.party,
+                Some(t),
+                Some(ctx.store),
+            ) < 4
+        });
+    let (leg_unit, leg_auras) = if self_cast {
+        (Some(ctx.store), ctx.self_auras)
+    } else {
+        (ctx.target_store, ctx.target_auras)
+    };
+    if leg_unit.is_none() && (d.target_aura_state != 0 || wants_target_aura) {
         return (false, false);
     }
-    if let Some(target) = ctx.target_store.filter(|_| target_legs) {
+    if let Some(unit) = leg_unit.filter(|_| target_legs) {
         if d.target_aura_state != 0
-            && target.0.unit_aura_state() & (1 << (d.target_aura_state - 1)) == 0
+            && unit.0.unit_aura_state() & (1 << (d.target_aura_state - 1)) == 0
         {
             return (false, false);
         }
-        if !target_aura_spells_met(d, spells, ctx.target_auras) {
+        if !target_aura_spells_met(d, spells, leg_auras) {
             return (false, false);
         }
-        match d.implicit_target_a1 {
-            // The attack check.
-            IMPLICIT_TARGET_ENEMY
-                if !can_attack(
-                    Some(target),
-                    ctx.factions,
-                    ctx.reputations,
-                    ctx.party,
-                    Some(ctx.store),
-                ) =>
-            {
-                return (false, false);
-            }
-            // Reaction friendly or better, standing in for the assist check.
-            IMPLICIT_TARGET_FRIEND
-                if ring_reaction(
-                    ctx.factions,
-                    ctx.reputations,
-                    ctx.party,
-                    Some(target),
-                    Some(ctx.store),
-                ) < 4 =>
-            {
-                return (false, false);
-            }
-            _ => {}
+    }
+    // The fork's attack check; its assist arm (single friend) is the self-cast above.
+    if let Some(target) = leg_unit
+        .filter(|_| d.target_aura_state != 0 && d.implicit_target_a1 == IMPLICIT_TARGET_ENEMY)
+    {
+        if !can_attack(
+            Some(target),
+            ctx.factions,
+            ctx.reputations,
+            ctx.party,
+            Some(ctx.store),
+        ) {
+            return (false, false);
         }
     }
     // Leg 11: only a cooldown-on-event spell greys, while its record is on hold; a running cooldown
@@ -2083,5 +2089,73 @@ mod tests {
                 (expect, false)
             );
         }
+    }
+
+    /// Power Word: Shield's shape (ExcludeTargetAuraSpell Weakened Soul, implicit target 21) stays
+    /// usable on a target that is not friendly, and its legs read the caster there: our own
+    /// Weakened Soul greys it with no target and with a hostile one.
+    #[test]
+    fn a_single_friend_spell_reads_the_caster_without_a_friendly_target() {
+        let me = player(&[]);
+        let cooldowns = Cooldowns::default();
+        let reputations = Reputations(Vec::new(), Vec::new());
+        let spells = Spells::empty_for_tests();
+        let items = Items::default();
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let commands = NetCommands(tx);
+        let shield = SpellDisplay {
+            exclude_target_aura_spell: 6788,
+            implicit_target_a1: IMPLICIT_TARGET_FRIEND,
+            ..Default::default()
+        };
+        // No faction template: the reaction reads neutral, below the assist rank.
+        let enemy = ObjectStore(ObjectFields::from_pairs(&[(
+            benilla_protocol::field::FIELD_UNIT_HEALTH,
+            100,
+        )]));
+        let mut objs = crate::ui_items::TestObjects::new();
+        let objects = objs.get();
+        let carried = crate::ui_items::carried_counts(&me.0, &objects);
+        let spell_mods = SpellModifiers::default();
+        let c = UsableCtx {
+            target_store: Some(&enemy),
+            ..ctx(&me, &cooldowns, &reputations, &carried, &spell_mods)
+        };
+        assert_eq!(
+            spell_usable(17, &shield, &spells, &c, &objects, &items, &commands),
+            (true, false)
+        );
+
+        // Our own Weakened Soul greys it with no target and with the hostile one.
+        let (_, soul) = crate::unit_auras::aura_unit_for_test(&[6788]);
+        for target in [None, Some(&enemy)] {
+            let c = UsableCtx {
+                target_store: target,
+                self_auras: Some(&soul),
+                ..ctx(&me, &cooldowns, &reputations, &carried, &spell_mods)
+            };
+            assert_eq!(
+                spell_usable(17, &shield, &spells, &c, &objects, &items, &commands),
+                (false, false),
+                "target {:?}",
+                target.is_some()
+            );
+        }
+        // The enemy's own Weakened Soul does not: the shield would land on us.
+        let c = UsableCtx {
+            target_store: Some(&enemy),
+            target_auras: Some(&soul),
+            ..ctx(&me, &cooldowns, &reputations, &carried, &spell_mods)
+        };
+        assert_eq!(
+            spell_usable(17, &shield, &spells, &c, &objects, &items, &commands),
+            (true, false)
+        );
+        // With no target and no debuff on us it is lit.
+        let c = ctx(&me, &cooldowns, &reputations, &carried, &spell_mods);
+        assert_eq!(
+            spell_usable(17, &shield, &spells, &c, &objects, &items, &commands),
+            (true, false)
+        );
     }
 }
