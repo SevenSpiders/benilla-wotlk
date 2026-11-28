@@ -8,11 +8,12 @@ use std::sync::Arc;
 
 use benilla_formats::{
     accumulate_wmo_group_camera_collision, accumulate_wmo_group_camera_only_collision,
-    accumulate_wmo_group_collision, accumulate_wmo_group_pick_collision, parse_wmo_lights,
-    parse_wmo_root, wmo_group_doodad_refs, wmo_group_footprint_tris, wmo_group_has_liquid_grid,
-    wmo_group_header, wmo_group_light_refs, wmo_group_liquid_mesh, wmo_group_submeshes,
-    CollisionMesh, FootprintTris, LiquidMesh, WmoDoodad, WmoDoodadSet, WmoFog, WmoGroupInfo,
-    WmoLight, WmoLiquidRule, WmoPortalInfo, WmoPortalRef,
+    accumulate_wmo_group_collision, accumulate_wmo_group_link_faces,
+    accumulate_wmo_group_pick_collision, parse_wmo_lights, parse_wmo_root, wmo_group_doodad_refs,
+    wmo_group_footprint_tris, wmo_group_has_liquid_grid, wmo_group_header, wmo_group_light_refs,
+    wmo_group_liquid_mesh, wmo_group_submeshes, CollisionMesh, FootprintTris, LiquidMesh,
+    WmoDoodad, WmoDoodadSet, WmoFog, WmoGroupInfo, WmoLight, WmoLiquidRule, WmoPortalInfo,
+    WmoPortalRef,
 };
 use bevy::asset::io::Reader;
 use bevy::asset::{Asset, AssetLoader, LoadContext};
@@ -79,6 +80,8 @@ pub struct WmoModel {
     pub collision: Option<CollisionMesh>,
     /// Camera and line-of-sight collision: DETAIL kept, NOCAMCOLLIDE dropped.
     pub collision_camera: Option<CollisionMesh>,
+    /// The faces an object's room link casts on ([`WmoLinkFaces`]), wider than the walking set.
+    pub link_faces: WmoLinkFaces,
     /// The mouse pick's occluder faces: every face but MOPY `0x88` and blended materials, DETAIL
     /// kept, the set the world trace's ignore mask `0x188` leaves.
     pub collision_pick: Option<CollisionMesh>,
@@ -192,6 +195,67 @@ pub fn footprint_tri_grids(footprints: &[Option<FootprintTris>]) -> Vec<Option<C
         .collect()
 }
 
+/// The faces the object-link segment query (`0x7c6600`) hits, per group: every face past MOPY
+/// `0x82` that is `RENDER`, `COLLISION` or `DETAIL`. Unlike the walking set, a render-only detail face
+/// (the coals a Utgarde forge fire sits on) takes a link. The query keeps its nearest interior hit
+/// (`RENDER` or `COLLISION`) and falls back to its nearest ground hit only without one (`0x7c2700`),
+/// so the two classes are kept apart.
+#[derive(Clone, Default)]
+pub struct WmoLinkFaces {
+    /// `RENDER` or `COLLISION` faces, per group, WMO-local.
+    pub interior: Vec<Vec<[[f32; 3]; 3]>>,
+    /// `DETAIL` faces with neither, per group.
+    pub ground: Vec<Vec<[[f32; 3]; 3]>>,
+    /// Per-group face bounds of [`Self::interior`] and [`Self::ground`].
+    pub interior_bounds: Vec<Option<([f32; 3], [f32; 3])>>,
+    pub ground_bounds: Vec<Option<([f32; 3], [f32; 3])>>,
+    /// Per-group column indexes of the two sets.
+    pub interior_grids: Vec<Option<ColumnGrid>>,
+    pub ground_grids: Vec<Option<ColumnGrid>>,
+    /// The union of every link face's bounds: the whole-building broad phase.
+    pub bounds: Option<([f32; 3], [f32; 3])>,
+}
+
+impl WmoLinkFaces {
+    /// One group file's two link classes, interior then ground-only, WMO-local.
+    #[allow(clippy::type_complexity)]
+    pub fn group_faces(group_bytes: &[u8]) -> (Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>) {
+        let (mut ipos, mut iidx, mut gpos, mut gidx) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        accumulate_wmo_group_link_faces(
+            group_bytes,
+            (&mut ipos, &mut iidx),
+            (&mut gpos, &mut gidx),
+        );
+        (
+            indexed_tris(&ipos, &iidx).collect(),
+            indexed_tris(&gpos, &gidx).collect(),
+        )
+    }
+
+    /// Index the two per-group sets.
+    pub fn new(interior: Vec<Vec<[[f32; 3]; 3]>>, ground: Vec<Vec<[[f32; 3]; 3]>>) -> Self {
+        let (interior_bounds, interior_union) = collision_tri_bounds(&interior);
+        let (ground_bounds, ground_union) = collision_tri_bounds(&ground);
+        let bounds = match (interior_union, ground_union) {
+            (Some((amin, amax)), Some((bmin, bmax))) => Some((
+                std::array::from_fn(|i| amin[i].min(bmin[i])),
+                std::array::from_fn(|i| amax[i].max(bmax[i])),
+            )),
+            (a, b) => a.or(b),
+        };
+        Self {
+            interior_grids: collision_tri_grids(&interior),
+            ground_grids: collision_tri_grids(&ground),
+            interior,
+            ground,
+            interior_bounds,
+            ground_bounds,
+            bounds,
+        }
+    }
+}
+
 /// Per-group column indexes over a per-group triangle set.
 pub fn collision_tri_grids(tris: &[Vec<[[f32; 3]; 3]>]) -> Vec<Option<ColumnGrid>> {
     tris.iter()
@@ -211,6 +275,20 @@ pub fn collision_tri_grids(tris: &[Vec<[[f32; 3]; 3]>]) -> Vec<Option<ColumnGrid
             })
         })
         .collect()
+}
+
+/// The triangles an indexed list names; a short or out-of-range triple is skipped.
+fn indexed_tris<'a>(
+    pos: &'a [[f32; 3]],
+    idx: &'a [u32],
+) -> impl Iterator<Item = [[f32; 3]; 3]> + 'a {
+    idx.as_chunks::<3>().0.iter().filter_map(|t| {
+        Some([
+            *pos.get(t[0] as usize)?,
+            *pos.get(t[1] as usize)?,
+            *pos.get(t[2] as usize)?,
+        ])
+    })
 }
 
 /// Per-group AABBs of a per-group triangle set, and their union; shared with the down-ray tests.
@@ -417,6 +495,10 @@ impl AssetLoader for WmoModelLoader {
             vec![Vec::new(); root.group_count() as usize];
         let mut group_camera_only_tris: Vec<Vec<[[f32; 3]; 3]>> =
             vec![Vec::new(); root.group_count() as usize];
+        let mut link_interior: Vec<Vec<[[f32; 3]; 3]>> =
+            vec![Vec::new(); root.group_count() as usize];
+        let mut link_ground: Vec<Vec<[[f32; 3]; 3]>> =
+            vec![Vec::new(); root.group_count() as usize];
         let mut col_pos: Vec<[f32; 3]> = Vec::new();
         let mut col_idx: Vec<u32> = Vec::new();
         let mut cam_pos: Vec<[f32; 3]> = Vec::new();
@@ -473,6 +555,12 @@ impl AssetLoader for WmoModelLoader {
                 (&mut pick_pos, &mut pick_idx),
                 (&mut blend_pos, &mut blend_idx),
             );
+            if let (Some(i), Some(g)) = (
+                link_interior.get_mut(gi as usize),
+                link_ground.get_mut(gi as usize),
+            ) {
+                (*i, *g) = WmoLinkFaces::group_faces(&gbytes);
+            }
             let (mut dpos, mut didx): (Vec<[f32; 3]>, Vec<u32>) = (Vec::new(), Vec::new());
             accumulate_wmo_group_camera_only_collision(&gbytes, &mut dpos, &mut didx);
             if let Some(tris) = group_camera_only_tris.get_mut(gi as usize) {
@@ -593,6 +681,7 @@ impl AssetLoader for WmoModelLoader {
             collision_bounds,
             collision,
             collision_camera,
+            link_faces: WmoLinkFaces::new(link_interior, link_ground),
             collision_pick,
             collision_decal_blended,
             doodads: root.doodads().to_vec(),

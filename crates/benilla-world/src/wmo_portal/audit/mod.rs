@@ -184,6 +184,8 @@ fn load_subject(internal: &str, site: Option<&Site>) -> Subject {
         .collect();
     let mut group_collision_tris: Vec<Vec<[[f32; 3]; 3]>> = vec![Vec::new(); n];
     let mut group_camera_only_tris: Vec<Vec<[[f32; 3]; 3]>> = vec![Vec::new(); n];
+    let mut link_interior: Vec<Vec<[[f32; 3]; 3]>> = vec![Vec::new(); n];
+    let mut link_ground: Vec<Vec<[[f32; 3]; 3]>> = vec![Vec::new(); n];
     let mut group_footprints: Vec<Option<benilla_formats::FootprintTris>> =
         (0..n).map(|_| None).collect();
     let mut cam_pos = Vec::new();
@@ -207,6 +209,7 @@ fn load_subject(internal: &str, site: Option<&Site>) -> Subject {
             nav.fog_indices = h.fog_indices;
         }
         accumulate_wmo_group_camera_collision(&gbytes, &mut cam_pos, &mut cam_idx);
+        (link_interior[gi], link_ground[gi]) = benilla_assets::WmoLinkFaces::group_faces(&gbytes);
         // Leg A's face set, as the asset loader stores it: every non-DETAIL face, no orientation
         // filter. The flat walk mesh is fed from the same buffers.
         let mut cp: Vec<[f32; 3]> = Vec::new();
@@ -263,6 +266,7 @@ fn load_subject(internal: &str, site: Option<&Site>) -> Subject {
         collision_bounds,
         collision: None,
         collision_camera: None,
+        link_faces: benilla_assets::WmoLinkFaces::new(link_interior, link_ground),
         collision_pick: None,
         collision_decal_blended: None,
         doodads: Vec::new(),
@@ -912,4 +916,49 @@ fn deeprun_tram_undersea_claims_its_own_mfog() {
         "end {} should be the record's 236.1 yd",
         target.end
     );
+}
+
+/// Utgarde Keep (map 574): the dungeon's one placement.
+const UTGARDE_KEEP: Site = Site {
+    wmo: r"WORLD\WMO\DUNGEON\VALGARDE\VALGARDE_70GW.WMO",
+    map: "Valgarde70",
+    tile: (32, 31),
+    uid: 1327546,
+};
+
+/// The Furnace of Hate's three forge fires (GameObjects 186691-186693, AzerothCore spawns 65411-65413)
+/// each sit on a render-only `DETAIL` coal face (MOPY `0x24`) of interior group 16 with no face
+/// below. The object link (`0x7c6600`, ignore mask `0x82`) hits the coals and links the fire into
+/// the room; the walking set has no face there, which left the fires "outdoors" and culled.
+#[test]
+fn utgarde_forge_fires_link_into_the_furnace_room() {
+    let _data = benilla_formats::wow_data_or_skip!();
+    let subject = load_subject(UTGARDE_KEEP.wmo, Some(&UTGARDE_KEEP));
+    let model = &subject.model;
+    let placed = subject.placed.as_ref().expect("a placed site");
+    let walking_only = benilla_assets::WmoLinkFaces::new(
+        model.group_collision_tris.clone(),
+        vec![Vec::new(); model.group_collision_tris.len()],
+    );
+    for (spawn, feet) in [
+        (65411, [362.374, -16.842, 24.6786]),
+        (65412, [359.877, -14.4443, 24.6786]),
+        (65413, [359.866, -18.2358, 24.6835]),
+    ] {
+        let feet_world = wow_to_bevy(feet);
+        let lift = Vec3::Y * super::interior::POSITION_PROBE_LIFT;
+        let local = |w: Vec3| bevy_to_wow(placed.local_from_world.transform_point3(w));
+        let (probe, mid) = (local(feet_world + lift), local(feet_world + lift));
+        let terrain = subject.terrain_z(probe);
+        assert_eq!(
+            super::seed::link_down_ray(&model.link_faces, &model.group_nav, probe, mid, terrain),
+            Some(16),
+            "fire {spawn} links into the furnace room"
+        );
+        assert_eq!(
+            super::seed::link_down_ray(&walking_only, &model.group_nav, probe, mid, terrain),
+            None,
+            "fire {spawn}: the walking set alone finds no face under the coals"
+        );
+    }
 }

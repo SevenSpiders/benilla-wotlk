@@ -1524,6 +1524,7 @@ mod tests {
             collision_bounds: None,
             collision: None,
             collision_camera: None,
+            link_faces: Default::default(),
             collision_pick: None,
             collision_decal_blended: None,
             doodads: Vec::new(),

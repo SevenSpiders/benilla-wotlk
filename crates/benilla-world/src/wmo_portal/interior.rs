@@ -353,10 +353,8 @@ fn room_cast(
     let mid_world = feet_world + Vec3::Y * POSITION_PROBE_LIFT;
     let terrain = terrain_height_under(streamer, adt_tiles, probe_world);
     for (entity, inst) in instances {
+        // No footprint reject: it spans the walking faces, and a link face can lie past them.
         let footprint = footprints.get(entity).ok();
-        if footprint.is_some_and(|f| !f.holds(probe_world)) {
-            continue; // the bounds test below would reject it
-        }
         let Some(model) = wmos.get(&inst.handle) else {
             continue;
         };
@@ -366,14 +364,12 @@ fn room_cast(
         let local_from_world =
             footprint.map_or_else(|| inst.world_from_local.inverse(), |f| f.local_from_world);
         let probe_local = bevy_to_wow(local_from_world.transform_point3(probe_world));
-        if !column_in_collision_bounds(model.collision_bounds, probe_local, false) {
-            continue; // no face of this building can own the probe column
+        if !column_in_collision_bounds(model.link_faces.bounds, probe_local, false) {
+            continue; // no link face of this building can own the probe column
         }
         let terrain_local = terrain.map(|z| terrain_z_local(&local_from_world, probe_world, z));
         if let Some(gi) = link_down_ray(
-            &model.group_collision_tris,
-            &model.group_collision_bounds,
-            &model.group_collision_grids,
+            &model.link_faces,
             &model.group_nav,
             probe_local,
             bevy_to_wow(local_from_world.transform_point3(mid_world)),
@@ -846,6 +842,7 @@ mod tests {
             collision_bounds: None,
             collision: None,
             collision_camera: None,
+            link_faces: Default::default(),
             collision_pick: None,
             collision_decal_blended: None,
             doodads: Vec::new(),

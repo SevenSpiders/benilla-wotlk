@@ -22,7 +22,7 @@
 //! entrance.
 
 use benilla_assets::column_grid::ColumnGrid;
-use benilla_assets::{WmoGroupNav, WmoModel, WmoPortalInfo, WmoPortalRef};
+use benilla_assets::{WmoGroupNav, WmoLinkFaces, WmoModel, WmoPortalInfo, WmoPortalRef};
 pub use benilla_formats::triangle_z_at as floor_z_at;
 
 use super::{
@@ -251,27 +251,40 @@ pub fn standing_group(model: &WmoModel, eye: [f32; 3], terrain_z: Option<f32>) -
 /// [`down_ray_claim`]'s interior winner for linking a world object to a group (the map's object
 /// link, `0x7c25d0`): an interior group takes part only when the object's own point `mid` lies in
 /// its authored box, so a cast through a hole in an exterior floor cannot claim a room beneath it.
+/// It casts on the link query's faces ([`WmoLinkFaces`], not the walking set): the nearest
+/// interior-class hit, else the nearest ground-only hit (`0x7c2700`), and only then the terrain race
+/// (`0x7c28f0`).
 pub(crate) fn link_down_ray(
-    tris: &[Vec<[[f32; 3]; 3]>],
-    bounds: &[Option<([f32; 3], [f32; 3])>],
-    grids: &[Option<ColumnGrid>],
+    links: &WmoLinkFaces,
     nav: &[WmoGroupNav],
     eye: [f32; 3],
     mid: [f32; 3],
     terrain_z: Option<f32>,
 ) -> Option<usize> {
-    ray_claim(
-        tris,
-        bounds,
-        grids,
-        nav,
-        eye,
-        terrain_z,
-        EXTERIOR,
-        false,
-        Some(mid),
+    let cast = |tris: &[Vec<[[f32; 3]; 3]>], bounds: &[_], grids: &[_]| {
+        ray_claim(
+            tris,
+            bounds,
+            grids,
+            nav,
+            eye,
+            None,
+            EXTERIOR,
+            false,
+            Some(mid),
+        )
+    };
+    let claim = cast(
+        &links.interior,
+        &links.interior_bounds,
+        &links.interior_grids,
     )
-    .and_then(|c| (!c.outdoor).then_some(c.group))
+    .or_else(|| cast(&links.ground, &links.ground_bounds, &links.ground_grids))?;
+    // Strictly nearer terrain wins the column, as in [`ray_claim`].
+    if terrain_z.is_some_and(|tz| tz <= eye[2] && eye[2] - tz < claim.depth) {
+        return None;
+    }
+    (!claim.outdoor).then_some(claim.group)
 }
 
 /// Whether a group can take a link from an object at `mid`: an exterior one always, an interior
@@ -883,27 +896,59 @@ mod tests {
         let tris = [vec![hole], quad(5.0, 30.0)];
         let navs = [plaza, sewer];
         let (bounds, _) = benilla_assets::collision_tri_bounds(&tris);
+        let links = WmoLinkFaces::new(tris.to_vec(), vec![Vec::new(); 2]);
         let feet = [0.0, 0.0, 40.1];
         assert_eq!(
             area_down_ray(&tris, &bounds, &[], &navs, feet, None, EXTERIOR),
             Some(1),
             "the position cast falls through to the sewer"
         );
-        assert_eq!(
-            link_down_ray(&tris, &bounds, &[], &navs, feet, feet, None),
-            None
-        );
+        assert_eq!(link_down_ray(&links, &navs, feet, feet, None), None);
         // A candle in the sewer stands inside its box and links to it.
         let candle = [0.0, 0.0, 5.1];
-        assert_eq!(
-            link_down_ray(&tris, &bounds, &[], &navs, candle, candle, None),
-            Some(1)
-        );
+        assert_eq!(link_down_ray(&links, &navs, candle, candle, None), Some(1));
         // On the plaza's own face the exterior group wins, box or no box.
         let street = [0.0, 10.0, 40.1];
+        assert_eq!(link_down_ray(&links, &navs, street, street, None), None);
+    }
+
+    /// The Utgarde forge fire: it sits on a render-only `DETAIL` coal face (MOPY `0x24`) with nothing
+    /// under it, in an interior room. The walking set has no face there; the link set links it.
+    #[test]
+    fn a_link_takes_a_render_detail_face_the_walking_set_lacks() {
+        let room = nav(0, [-10.0, -10.0, 0.0], [10.0, 10.0, 50.0], 0, 0);
+        let coals = quad(11.5, 2.0);
+        let fire = [0.0, 0.0, 11.5];
+        let walking = WmoLinkFaces::new(vec![Vec::new()], vec![Vec::new()]);
+        assert_eq!(link_down_ray(&walking, &[room], fire, fire, None), None);
+        let links = WmoLinkFaces::new(vec![coals], vec![Vec::new()]);
+        assert_eq!(link_down_ray(&links, &[room], fire, fire, None), Some(0));
+        // Terrain strictly nearer than the coals still wins the column.
         assert_eq!(
-            link_down_ray(&tris, &bounds, &[], &navs, street, street, None),
+            link_down_ray(&links, &[room], [0.0, 0.0, 12.0], fire, Some(11.8)),
             None
+        );
+    }
+
+    /// A ground-only `DETAIL` hit counts only when no interior-class face lies under the object,
+    /// however near it is (`0x7c2700`).
+    #[test]
+    fn a_link_prefers_any_interior_class_hit_over_a_nearer_ground_hit() {
+        let upper = nav(0, [-10.0, -10.0, 0.0], [10.0, 10.0, 50.0], 0, 0);
+        let lower = nav(0, [-10.0, -10.0, 0.0], [10.0, 10.0, 50.0], 0, 0);
+        let eye = [0.0, 0.0, 20.0];
+        let links = WmoLinkFaces::new(
+            vec![Vec::new(), quad(2.0, 5.0)],
+            vec![quad(19.0, 5.0), Vec::new()],
+        );
+        assert_eq!(
+            link_down_ray(&links, &[upper, lower], eye, eye, None),
+            Some(1)
+        );
+        let only_ground = WmoLinkFaces::new(vec![Vec::new(); 2], vec![quad(19.0, 5.0), Vec::new()]);
+        assert_eq!(
+            link_down_ray(&only_ground, &[upper, lower], eye, eye, None),
+            Some(0)
         );
     }
 

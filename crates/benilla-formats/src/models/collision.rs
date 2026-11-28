@@ -143,6 +143,38 @@ pub fn accumulate_wmo_group_camera_only_collision(
     );
 }
 
+/// The face bits the object-link segment query skips: its ignore mask is `0x82` (`0x7c77d0`),
+/// `NOCAMCOLLIDE` and the query's visited bit, so a `DETAIL` face can take a link.
+const MOPY_LINK_SKIP: u8 = 0x82;
+/// MOPY `RENDER` (`0x20`) or `COLLISION` (`0x08`): a face the link query (`0x7c6600`) records as
+/// an interior hit; `RENDER` also counts as a ground hit.
+const MOPY_LINK_INTERIOR: u8 = 0x28;
+
+/// Append one WMO group file's object-link faces in one walk, split by the class the link query
+/// (`0x7c6600`) records them under: output 0 the interior hits (`RENDER` or `COLLISION`), output 1
+/// the ground-only hits (`DETAIL` alone). A face with none of the three is never hit.
+pub fn accumulate_wmo_group_link_faces(
+    group_bytes: &[u8],
+    interior: (&mut Vec<[f32; 3]>, &mut Vec<u32>),
+    ground: (&mut Vec<[f32; 3]>, &mut Vec<u32>),
+) {
+    accumulate_wmo_group_faces_routed(
+        group_bytes,
+        |flags, _| {
+            if flags & MOPY_LINK_SKIP != 0 {
+                None
+            } else if flags & MOPY_LINK_INTERIOR != 0 {
+                Some(0)
+            } else if flags & MOPY_DETAIL != 0 {
+                Some(1)
+            } else {
+                None
+            }
+        },
+        [interior, ground],
+    );
+}
+
 /// Append one WMO group file's faces past MOPY `0x88` ([`MOPY_PICK_SKIP`]) in one walk, split by
 /// material class: the opaque ones are the mouse pick's occluders, the blended ones go apart. The
 /// pick trace's segment test (`0x7c6c30`) classes a face opaque (`0x200`) when its material id is
