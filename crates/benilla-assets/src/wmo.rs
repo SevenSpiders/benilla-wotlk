@@ -237,13 +237,7 @@ impl WmoLinkFaces {
     pub fn new(interior: Vec<Vec<[[f32; 3]; 3]>>, ground: Vec<Vec<[[f32; 3]; 3]>>) -> Self {
         let (interior_bounds, interior_union) = collision_tri_bounds(&interior);
         let (ground_bounds, ground_union) = collision_tri_bounds(&ground);
-        let bounds = match (interior_union, ground_union) {
-            (Some((amin, amax)), Some((bmin, bmax))) => Some((
-                std::array::from_fn(|i| amin[i].min(bmin[i])),
-                std::array::from_fn(|i| amax[i].max(bmax[i])),
-            )),
-            (a, b) => a.or(b),
-        };
+        let bounds = union_bounds(interior_union, ground_union);
         Self {
             interior_grids: collision_tri_grids(&interior),
             ground_grids: collision_tri_grids(&ground),
@@ -275,6 +269,21 @@ pub fn collision_tri_grids(tris: &[Vec<[[f32; 3]; 3]>]) -> Vec<Option<ColumnGrid
             })
         })
         .collect()
+}
+
+/// The box holding both boxes; either alone when the other is absent.
+#[allow(clippy::type_complexity)]
+pub fn union_bounds(
+    a: Option<([f32; 3], [f32; 3])>,
+    b: Option<([f32; 3], [f32; 3])>,
+) -> Option<([f32; 3], [f32; 3])> {
+    match (a, b) {
+        (Some((amin, amax)), Some((bmin, bmax))) => Some((
+            std::array::from_fn(|i| amin[i].min(bmin[i])),
+            std::array::from_fn(|i| amax[i].max(bmax[i])),
+        )),
+        (a, b) => a.or(b),
+    }
 }
 
 /// The triangles an indexed list names; a short or out-of-range triple is skipped.
@@ -315,19 +324,7 @@ pub fn collision_tri_bounds(
             bounds
         })
         .collect();
-    let union = per_group.iter().flatten().fold(
-        None::<([f32; 3], [f32; 3])>,
-        |acc, (gmin, gmax)| match acc {
-            None => Some((*gmin, *gmax)),
-            Some((mut min, mut max)) => {
-                for a in 0..3 {
-                    min[a] = min[a].min(gmin[a]);
-                    max[a] = max[a].max(gmax[a]);
-                }
-                Some((min, max))
-            }
-        },
-    );
+    let union = per_group.iter().copied().fold(None, union_bounds);
     (per_group, union)
 }
 

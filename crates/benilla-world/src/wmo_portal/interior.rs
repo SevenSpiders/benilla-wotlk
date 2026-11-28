@@ -353,8 +353,10 @@ fn room_cast(
     let mid_world = feet_world + Vec3::Y * POSITION_PROBE_LIFT;
     let terrain = terrain_height_under(streamer, adt_tiles, probe_world);
     for (entity, inst) in instances {
-        // No footprint reject: it spans the walking faces, and a link face can lie past them.
         let footprint = footprints.get(entity).ok();
+        if footprint.is_some_and(|f| !f.holds(probe_world)) {
+            continue; // the bounds test below would reject it
+        }
         let Some(model) = wmos.get(&inst.handle) else {
             continue;
         };
@@ -460,9 +462,9 @@ pub fn indoor_verdict_at<'a, K: Copy>(
     indoor_verdict_among(&buildings, streamer, adt_tiles, anchor_world, attach)
 }
 
-/// A placed building's cached inverse and the world XZ box (Bevy x, z) of its collision bounds,
-/// stamped once its model loads. A down-ray outside the box can hit none of its faces, the same
-/// rejection the local-space bounds test makes, without the transform.
+/// A placed building's cached inverse and the world XZ box (Bevy x, z) of its walking and link
+/// faces' bounds together, stamped once its model loads. A down-ray outside the box can hit none of
+/// either set's faces, the same rejection each local-space bounds test makes, without the transform.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct WmoFootprint {
     pub local_from_world: bevy::math::Affine3A,
@@ -474,7 +476,8 @@ impl WmoFootprint {
     fn of(inst: &WmoPortalInstance, model: &WmoModel) -> Self {
         // Padded past float noise in the corner transforms; a model without bounds holds nothing.
         const PAD: f32 = 0.05;
-        let (lo, hi) = model.collision_bounds.map_or(
+        let bounds = benilla_assets::union_bounds(model.collision_bounds, model.link_faces.bounds);
+        let (lo, hi) = bounds.map_or(
             (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
             |(min, max)| {
                 let mut lo = Vec2::splat(f32::INFINITY);
